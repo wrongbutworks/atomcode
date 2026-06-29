@@ -842,6 +842,10 @@ impl RunningAgent {
             // API-valid. APPEND-ONLY — prefix-cache safe. Mirrors v1's
             // `Conversation::cancel_current_turn`.
             convo.backfill_cancelled_tool_results();
+            convo.push(Message::system(
+                "[The previous response was interrupted by the user before completing. \
+                 Reconsider the approach in light of this interruption before continuing.]",
+            ));
         } else {
             // CANCEL = UNDO (default): roll back to before the user message so the
             // cancelled prompt + partial work leaves NO trace.

@@ -530,3 +530,38 @@ async fn cancel_preserves_turn_when_keep_interrupted_context() {
         "the skipped tool_call must be backfilled with a (cancelled) result: {history:?}"
     );
 }
+
+// CLAIM 17f: in preserve mode, finish_cancelled appends a synthetic system marker so
+// the next turn's request explicitly tells the model the prior turn was user-interrupted.
+#[tokio::test]
+async fn preserve_mode_injects_interruption_marker() {
+    let mut reg = ToolRegistry::new();
+    reg.register(Arc::new(SelfCancelTool));
+    let provider = Arc::new(RecordingProvider::new(vec![
+        vec![
+            StreamEvent::ToolCall(tool_call("c_cancel", "self_cancel", "{}")),
+            StreamEvent::Done { truncated: false },
+        ],
+        vec![StreamEvent::TextDelta("ok".into()), StreamEvent::Done { truncated: false }],
+    ]));
+    let calls = provider.calls();
+    let mut handle = atomcode_kernel::agent::Agent::builder()
+        .provider(provider)
+        .tools(reg.mount(&["self_cancel"]))
+        .keep_interrupted_context(true)
+        .build()
+        .spawn();
+    handle.commands.send(AgentCommand::SendMessage { text: "go".into(), images: vec![] }).unwrap();
+    while let Some(ev) = handle.events.recv().await { if matches!(ev, AgentEvent::TurnComplete { .. }) { break; } }
+    handle.commands.send(AgentCommand::SendMessage { text: "next".into(), images: vec![] }).unwrap();
+    while let Some(ev) = handle.events.recv().await { if matches!(ev, AgentEvent::TurnComplete { .. }) { break; } }
+    handle.commands.send(AgentCommand::Shutdown).unwrap();
+    let _ = handle.task.await;
+
+    let calls = calls.lock().unwrap();
+    let history = &calls[1].0;
+    assert!(
+        history.iter().any(|m| m.role == Role::System && m.text.contains("interrupted by the user")),
+        "expected an interruption marker system message: {history:?}"
+    );
+}
