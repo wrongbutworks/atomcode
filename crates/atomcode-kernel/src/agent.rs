@@ -835,8 +835,18 @@ impl RunningAgent {
     /// - `keep_interrupted_context = true`: PRESERVE — keep this turn's partial
     ///   assistant/tool work; backfill a `(cancelled)` result for every dangling
     ///   tool_call so the wire stays API-valid. APPEND-ONLY — prefix-cache safe.
+    ///
+    /// PRESERVE only applies when the turn actually produced content. A cancel at the
+    /// stream OPEN / mid-stream before any assistant message was committed leaves just
+    /// the user prompt (`convo.len() == rollback_len + 1`): there is nothing to preserve,
+    /// and a "your response was interrupted" marker after a bare prompt would be both
+    /// semantically wrong (no response existed) and a consecutive-user wire shape. Such
+    /// empty-turn cancels fall back to UNDO regardless of the flag.
     async fn finish_cancelled(&self, convo: &mut Conversation, rollback_len: usize, ctx: &TurnCtx) {
-        if self.keep_interrupted_context {
+        // The cancelled turn produced content iff there is at least one message AFTER
+        // the user message that sits at `rollback_len`.
+        let produced_content = convo.messages.len() > rollback_len + 1;
+        if self.keep_interrupted_context && produced_content {
             // PRESERVE: keep this turn's partial assistant/tool work; backfill a
             // `(cancelled)` result for every dangling tool_call so the wire stays
             // API-valid. APPEND-ONLY — prefix-cache safe. Mirrors v1's
@@ -858,8 +868,10 @@ impl RunningAgent {
                  Reconsider the approach in light of this interruption before continuing.]",
             ));
         } else {
-            // CANCEL = UNDO (default): roll back to before the user message so the
-            // cancelled prompt + partial work leaves NO trace.
+            // CANCEL = UNDO: roll back to before the user message so the cancelled
+            // prompt + partial work leaves NO trace. Reached when the flag is off
+            // (default) OR when the flag is on but the turn produced nothing to
+            // preserve (empty-turn cancel — see the doc above).
             convo.messages.truncate(rollback_len);
         }
         self.rt.emit(AgentEvent::Cancelled);

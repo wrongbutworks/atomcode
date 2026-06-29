@@ -102,6 +102,66 @@ async fn cancel_aborts_a_turn_hung_in_the_stream_open() {
     let _ = handle.task.await;
 }
 
+// CLAIM 17g: PRESERVE only applies when the cancelled turn actually produced
+// assistant/tool content. A cancel at the stream OPEN (before any output is committed)
+// has NOTHING to preserve — keeping a bare user prompt plus a "your response was
+// interrupted" marker would be semantically wrong (no response existed) AND a
+// consecutive-user wire shape. So an empty-turn cancel falls back to UNDO (rollback)
+// even with keep_interrupted_context = true: no prompt trace, and no dangling marker.
+#[tokio::test]
+async fn keep_interrupted_context_falls_back_to_undo_on_empty_turn() {
+    let mut handle = atomcode_kernel::agent::Agent::builder()
+        .provider(Arc::new(HangingOpenProvider))
+        .tools(ToolRegistry::new().mount(&[]))
+        .keep_interrupted_context(true)
+        .build()
+        .spawn();
+
+    handle
+        .commands
+        .send(AgentCommand::SendMessage { text: "hi".into(), images: vec![] })
+        .unwrap();
+
+    let drive = async {
+        let mut sent_cancel = false;
+        while let Some(ev) = handle.events.recv().await {
+            match ev {
+                AgentEvent::TurnStarted if !sent_cancel => {
+                    sent_cancel = true;
+                    handle.commands.send(AgentCommand::Cancel).unwrap();
+                }
+                AgentEvent::TurnComplete { .. } => break,
+                _ => {}
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), drive)
+        .await
+        .expect("an empty-turn cancel must terminate, not hang");
+
+    handle.commands.send(AgentCommand::Snapshot).unwrap();
+    let snap = loop {
+        match handle.events.recv().await {
+            Some(AgentEvent::Snapshot { snapshot }) => break snapshot,
+            Some(_) => continue,
+            None => panic!("channel closed before Snapshot reply"),
+        }
+    };
+    assert!(
+        !snap.messages.iter().any(|m| m.text.contains("hi")),
+        "empty-turn cancel must roll back even with keep_interrupted_context on: {:?}",
+        snap.messages
+    );
+    assert!(
+        !snap.messages.iter().any(|m| m.text.contains("interrupted by the user")),
+        "no interruption marker when the turn produced nothing to preserve: {:?}",
+        snap.messages
+    );
+
+    handle.commands.send(AgentCommand::Shutdown).unwrap();
+    let _ = handle.task.await;
+}
+
 /// A tool that fires the turn's cancellation token from INSIDE its own execute,
 /// then returns a REAL result. Used to drive the between-tools checkpoint
 /// deterministically: after this tool runs, the loop sees `cancel.is_cancelled()`
