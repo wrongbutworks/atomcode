@@ -785,6 +785,13 @@ impl Bridge {
                 }
                 if let Some(p) = config.providers.get(&config.default_provider) {
                     apply_reload_provider(&mut self.coding_cfg, p);
+                    // `keep_interrupted_context` is a GLOBAL setting (not per-provider), so
+                    // `apply_reload_provider` does not touch it. Propagate it from the new
+                    // config here — otherwise an edit-then-reload (/model, /effort, /think)
+                    // leaves the rebuilt kernel on the stale startup value while the TUI's
+                    // `ctx.config` has the new one, desyncing the cancel behavior from the
+                    // input-box restore. Mirrors the initial wire-up in `Bridge::run`.
+                    self.coding_cfg.keep_interrupted_context = config.keep_interrupted_context;
                     match build_provider(&self.coding_cfg) {
                         Ok(provider) => {
                             // Assemble BEFORE tearing down the old handle — if
