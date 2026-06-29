@@ -29,6 +29,30 @@ function messageHasTools(m: Message): boolean {
   return m.parts.some((p) => p.kind === 'tool');
 }
 
+/** Serialize a message for copying — mirrors what's RENDERED on screen, in
+ *  chronological order: assistant text, advisory notices, AND tool calls (their
+ *  header line plus args/output), not just the plain text. `t` localizes the
+ *  tool args/output labels to match the expandable rows. */
+function messageCopyText(m: Message, t: (k: string) => string): string {
+  const blocks: string[] = [];
+  for (const p of m.parts) {
+    if (p.kind === 'text') {
+      if (p.text.trim()) blocks.push(p.text.trim());
+    } else if (p.kind === 'notice') {
+      if (p.text.trim()) blocks.push(p.text.trim());
+    } else if (p.kind === 'tool') {
+      const tool = p.tool;
+      const detail = formatToolDetail(tool.name, tool.args);
+      const head = '• ' + displayToolName(tool.name) + (detail ? ' ' + detail : '');
+      const lines = [head];
+      if (tool.args) lines.push(`  ${t('tool.args')}: ${tool.args}`);
+      if (tool.output) lines.push(`  ${t('tool.output')}: ${tool.output}`);
+      blocks.push(lines.join('\n'));
+    }
+  }
+  return blocks.join('\n\n');
+}
+
 /** Max attached images per message and per-image byte cap (raw file size). */
 const MAX_IMAGES = 6;
 const MAX_IMAGE_MB = 2;
@@ -1583,6 +1607,22 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
             (isLast ? ' is-last' : '') +
             (terse ? ' is-terse' : '');
 
+          // 一个用户问题后大模型可能连续返回多条助手消息，直到下一条用户消息
+          // （或会话结束）。整组只在「最后一条」下面显示一个复制按钮，复制本组
+          // 全部助手内容（正文 + 工具调用 + 通知）。
+          const isGroupEnd = isLast || messages[idx + 1]?.role === 'user';
+          let groupCopyText = '';
+          if (isGroupEnd && !streaming) {
+            let start = idx;
+            while (start > 0 && messages[start - 1].role === 'assistant') start--;
+            const blocks: string[] = [];
+            for (let j = start; j <= idx; j++) {
+              const block = messageCopyText(messages[j], t);
+              if (block.trim()) blocks.push(block);
+            }
+            groupCopyText = blocks.join('\n\n');
+          }
+
           return (
             <div key={idx} class={cls}>
               {/* Error turns are pure injected text — render flat. */}
@@ -1598,6 +1638,9 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                   {renderAssistantParts(msg.parts)}
                   {streaming && <span class="streaming-cursor" />}
                 </>
+              )}
+              {groupCopyText.trim() && (
+                <CopyButton text={groupCopyText} align="start" />
               )}
             </div>
           );
@@ -1687,6 +1730,38 @@ function renderAssistantParts(parts: MsgPart[]): VNode[] {
   return out;
 }
 
+/** 复制按钮：点击把 text 写入剪贴板，短暂显示「已复制」反馈。
+ *  用于用户消息与助手回复下方，方便整段复制问题/回答。 */
+function CopyButton({ text, align }: { text: string; align: 'start' | 'end' }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  function onClick() {
+    if (!text) return;
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      })
+      .catch(() => {});
+  }
+  return (
+    <div class={'message-actions message-actions-' + align}>
+      <button
+        class="copy-msg-btn"
+        type="button"
+        onClick={onClick}
+        title={copied ? t('chat.copied') : t('chat.copy')}
+        aria-label={copied ? t('chat.copied') : t('chat.copy')}
+      >
+        <span class="copy-msg-icon" aria-hidden="true">
+          {copied ? '✓' : '⧉'}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 function UserMessageView({ msg }: { msg: Message }) {
   const t = useT();
   // 技能/文档型消息默认折叠为一行徽章，点击展开查看原文。
@@ -1732,6 +1807,7 @@ function UserMessageView({ msg }: { msg: Message }) {
             普通用户消息保持逐字纯文本（不把用户输入当 markdown 解析）。 */}
         {skillTitle ? <Markdown content={text} /> : text}
       </div>
+      {text && <CopyButton text={text} align="end" />}
     </div>
   );
 }

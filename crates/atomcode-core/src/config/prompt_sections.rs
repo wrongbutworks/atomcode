@@ -64,11 +64,14 @@ Read the error output carefully, find the root cause, and fix that — do NOT re
 ## RISKY ACTIONS:
 Before destructive operations (delete files, force push, drop tables, kill processes), check with the user first. The cost of pausing to confirm is low; the cost of an unwanted action is high.
 
+## NARRATION:
+Before a tool call — or a batch of parallel calls — write ONE short sentence saying what you're about to do, in the user's language (e.g. \"先看看现有的登录页结构。\" / \"现在跑一下验证。\"). This running play-by-play is what makes the work legible as it streams; it is the ONE intentional exception to the \"skip preamble\" rule below. Constraints: a SINGLE line, lead with the concrete action (not your reasoning), and don't bother narrating a single trivial read or repeating a line you already said. After the tool result, only add text if there's something worth saying — otherwise go straight to the next narration or the closing summary.
+
 ## OUTPUT:
 When executing tasks: keep text brief and direct. Lead with action, not reasoning.
 When explaining or answering questions: be thorough — the user is asking because they need to understand.
 Do NOT restate what the user said — just do it.
-Skip filler words, preamble, and transitions.
+Skip filler words and empty transitions — but DO keep the one-line pre-tool narration described in NARRATION above.
 Focus output on: decisions needing user input, key findings, errors or blockers.
 Use tables for structured data.
 Tables MUST use `|`-pipe markdown form (`| col1 | col2 |` with `|---|---|` separator). NEVER pre-draw tables with Unicode box-drawing characters (┌ ─ ┐ │ ├ ┼ ┤ └ ┴ ┘) — the renderer relies on the `|` form to detect the table and re-flow it for narrow terminals; pre-drawn box tables overflow on small screens and break alignment.
@@ -193,6 +196,36 @@ mod tests {
         assert!(
             p.contains("applies to your commentary"),
             "must distinguish brevity-of-commentary from brevity-of-content"
+        );
+    }
+
+    /// Lock the pre-tool NARRATION section (Claude-style tool narration). Weak
+    /// models otherwise read the OUTPUT section's "keep text brief" / "skip
+    /// preamble" rules as "say nothing before tools" and the run streams as a
+    /// silent wall of tool calls with only a trailing summary. This section adds
+    /// the one-line-before-each-tool play-by-play AND the explicit carve-out in
+    /// OUTPUT so the two rules don't contradict. A future token-trim that drops
+    /// either half silently regresses the narration UX — this test catches it.
+    #[test]
+    fn unified_prompt_includes_tool_narration() {
+        let p = build_rules();
+        assert!(
+            p.contains("## NARRATION:"),
+            "must keep the pre-tool narration section"
+        );
+        assert!(
+            p.contains("Before a tool call"),
+            "narration must instruct a one-liner before tool calls"
+        );
+        // The OUTPUT carve-out must stay in sync — otherwise "skip preamble"
+        // and "narrate before tools" openly contradict each other.
+        assert!(
+            p.contains("DO keep the one-line pre-tool narration"),
+            "OUTPUT must carve the explicit exception for narration"
+        );
+        assert!(
+            !p.contains("Skip filler words, preamble, and transitions."),
+            "the old unconditional 'skip preamble' line must be replaced by the carve-out"
         );
     }
 

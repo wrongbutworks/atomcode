@@ -24,6 +24,7 @@ pub mod setup;
 pub mod skill;
 pub mod stream;
 pub mod telemetry_bootstrap;
+pub mod think;
 pub mod tool;
 pub mod trace;
 pub mod turn;

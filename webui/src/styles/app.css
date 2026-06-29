@@ -623,6 +623,38 @@ body {
   color: var(--app-primary-foreground);
 }
 
+/* === Message copy action (under user question / assistant answer) === */
+.message-actions {
+  display: flex;
+  margin-top: 4px;
+  /* 默认隐藏，悬浮到对应消息上方才淡入显示。 */
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.message-actions-end { justify-content: flex-end; }
+.message-actions-start { justify-content: flex-start; }
+.user-message-wrapper:hover .message-actions,
+.timeline-message:hover .message-actions { opacity: 1; }
+
+.copy-msg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  border-radius: var(--corner-radius-small);
+  background: transparent;
+  color: var(--app-secondary-foreground);
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.copy-msg-btn:hover {
+  background: var(--app-ghost-button-hover-background);
+  color: var(--app-primary-foreground);
+}
+.copy-msg-icon { font-size: 14px; line-height: 1; }
+
 /* === Markdown Root === */
 .markdown-root {
   text-wrap: auto;

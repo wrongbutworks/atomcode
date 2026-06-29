@@ -22,7 +22,10 @@ pub mod terminal;
 pub mod terminal_bg;
 #[cfg(test)]
 pub mod test_term;
-pub mod think;
+// `think` (the streaming `<think>…</think>` stripper) moved to `atomcode-core`
+// so the daemon/webui streaming path can reuse the same stripper. Re-exported
+// here to keep existing `crate::think::…` references working.
+pub use atomcode_core::think;
 pub mod trace;
 pub mod width;
 

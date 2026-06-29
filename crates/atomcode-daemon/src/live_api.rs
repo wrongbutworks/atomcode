@@ -15,6 +15,7 @@ use atomcode_core::live::{LiveEvent, TurnExecutor, TurnState, UserInput};
 use atomcode_core::lsp::manager::build_lsp_manager;
 use atomcode_core::mcp::{register_mcp_tools, McpRegistry};
 use atomcode_core::provider;
+use atomcode_core::think::ThinkStripper;
 use atomcode_core::tool::diagnostics::DiagnosticsTool;
 use atomcode_core::tool::PermissionDecision;
 use atomcode_core::tool::{ToolContext, ToolRegistry};
@@ -907,6 +908,11 @@ impl TurnExecutor for KernelTurnExecutor {
 
         let mut cancelled = false;
         let mut bridge_dead = false;
+        // Strip `<think>…</think>` (and hashed reasoning sentinels like
+        // `</think_never_used_…>`) from the visible text stream — the webui has
+        // no stripper of its own, so without this a model's thinking delimiters
+        // leak verbatim into the chat. Fresh per turn (this fn drives one turn).
+        let mut think = ThinkStripper::new();
         let final_messages = loop {
             let ev = tokio::select! {
                 _ = cancel.cancelled(), if !cancelled => {
@@ -923,7 +929,12 @@ impl TurnExecutor for KernelTurnExecutor {
                 break None;
             };
             match ev {
-                AgentEvent::TextDelta(t) => emit(TurnEvent::TextDelta(t)),
+                AgentEvent::TextDelta(t) => {
+                    let visible = think.feed(&t);
+                    if !visible.is_empty() {
+                        emit(TurnEvent::TextDelta(visible));
+                    }
+                }
                 AgentEvent::ReasoningDelta(t) => emit(TurnEvent::ReasoningDelta(t)),
                 AgentEvent::ToolCallStreaming { name, hint } => {
                     emit(TurnEvent::ToolCallStreaming { name, hint })
@@ -1171,6 +1182,9 @@ pub(crate) async fn run_chat_turn_v2(
     });
 
     let mut cancelled = false;
+    // Same `<think>`/hashed-sentinel stripping as the /live path — the /chat v2
+    // stream feeds the webui too, which has no stripper of its own.
+    let mut think = ThinkStripper::new();
     let final_messages = loop {
         let ev = tokio::select! {
             _ = cancel.cancelled(), if !cancelled => {
@@ -1182,6 +1196,12 @@ pub(crate) async fn run_chat_turn_v2(
         };
         let Some(ev) = ev else { break None };
         match ev {
+            AgentEvent::TextDelta(t) => {
+                let visible = think.feed(&t);
+                if !visible.is_empty() {
+                    let _ = turn_tx.send(TurnEvent::TextDelta(visible));
+                }
+            }
             AgentEvent::ApprovalNeeded { tool_name, reason, call, snapshot } => {
                 let _ = turn_tx.send(TurnEvent::ApprovalRequested {
                     tool_name,
