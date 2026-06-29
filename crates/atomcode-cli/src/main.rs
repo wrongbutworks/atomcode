@@ -1912,12 +1912,11 @@ async fn run() -> Result<i32> {
 #[cfg(unix)]
 fn redirect_stderr_to_log_file() {
     use std::os::unix::io::AsRawFd;
-    let Some(home) = std::env::var_os("ATOMCODE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".atomcode")))
-    else {
-        return;
-    };
+    // Route through Config::config_dir() rather than re-reading ATOMCODE_HOME
+    // by hand: it's the single funnel that sanitizes quoted/whitespaced env
+    // values and resolves home via real_home_dir() (SUDO_USER-aware). Reading
+    // the raw env here would diverge from where every other file lands.
+    let home = Config::config_dir();
     if std::fs::create_dir_all(&home).is_err() {
         return;
     }

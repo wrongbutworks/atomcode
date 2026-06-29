@@ -1037,7 +1037,9 @@ pub fn save_auth(auth: &AuthInfo) -> Result<()> {
 
     // Ensure parent directory exists
     if let Some(parent) = auth_path.parent() {
-        std::fs::create_dir_all(parent).context("Failed to create auth directory")?;
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create auth directory {}", parent.display())
+        })?;
         // Set directory permissions to 0o700 (owner only) on Unix
         #[cfg(unix)]
         {

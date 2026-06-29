@@ -743,8 +743,23 @@ impl Config {
     /// Resolve the atomcode config dir. Pure function for testability —
     /// `config_dir()` is a thin wrapper that injects real env + real home.
     fn resolve_config_dir(env_atomcode_home: Option<String>, home: Option<PathBuf>) -> PathBuf {
-        if let Some(p) = env_atomcode_home {
-            return PathBuf::from(p);
+        if let Some(raw) = env_atomcode_home {
+            // Sanitize the env value before trusting it as a path. Windows users
+            // (and anyone pasting into the System Properties env editor) commonly
+            // end up with literal surrounding quotes — `set ATOMCODE_HOME="D:\x"`
+            // keeps the quotes IN the value, and `"` is an illegal filename char,
+            // so create_dir_all later fails with ERROR_INVALID_NAME (os error 123).
+            // Trim whitespace and a single pair of matching wrapping quotes.
+            let trimmed = raw.trim();
+            let unquoted = trimmed
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                .unwrap_or(trimmed)
+                .trim();
+            if !unquoted.is_empty() {
+                return PathBuf::from(unquoted);
+            }
         }
         home.unwrap_or_else(|| PathBuf::from(".")).join(".atomcode")
     }
@@ -901,6 +916,38 @@ mod tests {
             Some(PathBuf::from("/Users/foo")),
         );
         assert_eq!(result, PathBuf::from("/tmp/custom-atomcode-home"));
+    }
+
+    #[test]
+    fn test_resolve_config_dir_strips_wrapping_double_quotes() {
+        // Real Windows bug (os error 123 ERROR_INVALID_NAME): a user set
+        // `ATOMCODE_HOME="D:\atomcode_suit"` so the quotes ended up IN the
+        // value, and `"` is an illegal filename char → create_dir_all failed.
+        let result = Config::resolve_config_dir(
+            Some("\"D:\\atomcode_suit\"".to_string()),
+            Some(PathBuf::from("C:\\Users\\foo")),
+        );
+        assert_eq!(result, PathBuf::from("D:\\atomcode_suit"));
+    }
+
+    #[test]
+    fn test_resolve_config_dir_strips_wrapping_single_quotes_and_whitespace() {
+        let result = Config::resolve_config_dir(
+            Some("  '/tmp/custom'  ".to_string()),
+            Some(PathBuf::from("/Users/foo")),
+        );
+        assert_eq!(result, PathBuf::from("/tmp/custom"));
+    }
+
+    #[test]
+    fn test_resolve_config_dir_quotes_only_falls_back_to_home() {
+        // A value of just `""` is effectively empty — fall back to ~/.atomcode
+        // rather than producing a bogus empty/quote path.
+        let result = Config::resolve_config_dir(
+            Some("\"\"".to_string()),
+            Some(PathBuf::from("/Users/foo")),
+        );
+        assert_eq!(result, PathBuf::from("/Users/foo/.atomcode"));
     }
 
     #[test]

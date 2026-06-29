@@ -60,11 +60,34 @@ pub fn real_home_dir() -> Option<PathBuf> {
 /// but is implemented independently to avoid a circular dependency between
 /// the `atomcode-telemetry` and `atomcode-core` crates.
 pub fn default_atomcode_dir() -> PathBuf {
-    if let Some(p) = env::var("ATOMCODE_HOME").ok().filter(|s| !s.is_empty()) {
-        PathBuf::from(p)
-    } else {
-        real_home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".atomcode")
+    resolve_atomcode_dir(
+        env::var("ATOMCODE_HOME").ok().filter(|s| !s.is_empty()),
+        real_home_dir(),
+    )
+}
+
+/// Pure core of [`default_atomcode_dir`] — kept independent of
+/// `atomcode_core::config::Config::resolve_config_dir` only because of the
+/// circular dependency noted above. Any sanitization fix must be applied in
+/// BOTH places or Windows `ATOMCODE_HOME` resolution will diverge.
+fn resolve_atomcode_dir(env_atomcode_home: Option<String>, home: Option<PathBuf>) -> PathBuf {
+    if let Some(raw) = env_atomcode_home {
+        // Strip whitespace and a single pair of wrapping quotes. Windows users
+        // who do `set ATOMCODE_HOME="D:\x"` keep the quotes IN the value, and
+        // `"` is an illegal filename char → create_dir_all fails with
+        // ERROR_INVALID_NAME (os error 123). Mirrors Config::resolve_config_dir.
+        let trimmed = raw.trim();
+        let unquoted = trimmed
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(trimmed)
+            .trim();
+        if !unquoted.is_empty() {
+            return PathBuf::from(unquoted);
+        }
     }
+    home.unwrap_or_else(|| PathBuf::from(".")).join(".atomcode")
 }
 
 #[cfg(test)]
@@ -95,5 +118,34 @@ mod tests {
         std::fs::write(dir.path().join("device_id"), format!("{}\n\n", id)).unwrap();
         let got = load_or_create(dir.path()).unwrap();
         assert_eq!(id, got);
+    }
+
+    #[test]
+    fn resolve_atomcode_dir_strips_wrapping_quotes() {
+        // Must stay in lockstep with Config::resolve_config_dir: a quoted
+        // `ATOMCODE_HOME` (os error 123 on Windows) is sanitized here too,
+        // else telemetry/device_id paths diverge from the config dir.
+        assert_eq!(
+            resolve_atomcode_dir(
+                Some("\"D:\\atomcode_suit\"".to_string()),
+                Some(PathBuf::from("C:\\Users\\foo")),
+            ),
+            PathBuf::from("D:\\atomcode_suit"),
+        );
+        assert_eq!(
+            resolve_atomcode_dir(
+                Some("  '/tmp/custom'  ".to_string()),
+                Some(PathBuf::from("/Users/foo")),
+            ),
+            PathBuf::from("/tmp/custom"),
+        );
+    }
+
+    #[test]
+    fn resolve_atomcode_dir_quotes_only_falls_back_to_home() {
+        assert_eq!(
+            resolve_atomcode_dir(Some("\"\"".to_string()), Some(PathBuf::from("/Users/foo"))),
+            PathBuf::from("/Users/foo/.atomcode"),
+        );
     }
 }
