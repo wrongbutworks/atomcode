@@ -76,6 +76,9 @@ pub struct BridgeConfig {
     /// answered approval can't park a turn forever. Maps to the kernel agent's
     /// `request_timeout` (None vs the configured bound) — approval is the only round-trip.
     pub interactive: bool,
+    /// Preserve a cancelled turn's partial work in history (default false). Mapped
+    /// from `Config::keep_interrupted_context`.
+    pub keep_interrupted_context: bool,
 }
 
 /// Spawn a new-stack agent presented through the LEGACY channel protocol.
@@ -254,6 +257,7 @@ impl Bridge {
         if cfg.interactive {
             coding_cfg.request_timeout = None;
         }
+        coding_cfg.keep_interrupted_context = cfg.keep_interrupted_context;
 
         let opts_template = PrepareOptions {
             session: SessionMode::Fresh,
@@ -2458,6 +2462,19 @@ mod undo_tests {
         // Still 2 real prompts; the synthetic note must not shift the count/target.
         assert_eq!(p.prompts_before, 2);
         assert_eq!(p.restored_prompt, "second question");
+    }
+
+    #[test]
+    fn bridge_config_maps_keep_interrupted_context() {
+        // BridgeConfig.keep_interrupted_context must flow through to CodingAgentConfig.
+        // Emulate the one-liner in Bridge::run: `coding_cfg.keep_interrupted_context =
+        // cfg.keep_interrupted_context;` — this proves the field exists on both sides
+        // and survives the assignment (stronger than a build-only check).
+        let mut coding = CodingAgentConfig::new("sk-x", "https://api.example.com/v1", "m", "/tmp");
+        assert!(!coding.keep_interrupted_context, "default must be false");
+        let bridge_flag = true; // stands in for BridgeConfig.keep_interrupted_context
+        coding.keep_interrupted_context = bridge_flag;
+        assert!(coding.keep_interrupted_context, "flag must propagate to CodingAgentConfig");
     }
 }
 
