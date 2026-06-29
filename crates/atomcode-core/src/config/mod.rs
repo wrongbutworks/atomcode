@@ -128,9 +128,9 @@ pub struct Config {
     pub auto_commit: bool,
     /// When the user interrupts a turn (Ctrl+C / Esc), preserve the interrupted
     /// turn's partial work in conversation history (backfilled) instead of rolling
-    /// it back. Default `false` = the prompt is restored to the input box for
-    /// edit-and-resend (CANCEL = UNDO).
-    #[serde(default)]
+    /// it back. Default `true` = interrupted context is preserved. Set to `false`
+    /// to restore the old CANCEL=UNDO / edit-and-resend behavior.
+    #[serde(default = "default_true")]
     pub keep_interrupted_context: bool,
     /// Sub-agent execution policy. Missing from older configs → defaults to
     /// enabled=true, initial_turns=4, max_turns=12, max_concurrent=3, timeout_secs=300.
@@ -316,7 +316,7 @@ impl Default for Config {
             telemetry: Default::default(),
             lsp: Default::default(),
             auto_commit: false,
-            keep_interrupted_context: false,
+            keep_interrupted_context: true,
             subagent: Default::default(),
             vision_preprocessor_provider: None,
             language: None,
@@ -1033,7 +1033,7 @@ mod tests {
             telemetry: Default::default(),
             lsp: Default::default(),
             auto_commit: false,
-            keep_interrupted_context: false,
+            keep_interrupted_context: true,
             subagent: Default::default(),
             vision_preprocessor_provider: None,
             language: None,
@@ -1417,17 +1417,17 @@ mod tests {
     }
 
     #[test]
-    fn keep_interrupted_context_defaults_false_and_parses() {
-        // Missing from older configs → false.
+    fn keep_interrupted_context_defaults_true_and_parses() {
+        // Missing from older configs → true (serde default fires).
         let c: Config = toml::from_str(
             "default_provider = \"\"\n[providers]\n"
         ).unwrap();
-        assert!(!c.keep_interrupted_context);
-        // Explicit true round-trips.
-        let c: Config = toml::from_str(
-            "default_provider = \"\"\nkeep_interrupted_context = true\n[providers]\n"
-        ).unwrap();
         assert!(c.keep_interrupted_context);
+        // Explicit false opts back into CANCEL=UNDO behavior.
+        let c: Config = toml::from_str(
+            "default_provider = \"\"\nkeep_interrupted_context = false\n[providers]\n"
+        ).unwrap();
+        assert!(!c.keep_interrupted_context);
     }
 }
 
