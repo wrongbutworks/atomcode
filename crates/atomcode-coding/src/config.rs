@@ -81,6 +81,9 @@ pub struct CodingAgentConfig {
     /// /unknown ⇒ Exa. Mirrors v1's `[web_search] provider` config knob — without this the
     /// tool was hardwired to Exa with no way to opt into DDG.
     pub web_search_provider: Option<String>,
+    /// Preserve a cancelled turn's partial work in history instead of rolling back.
+    /// Default `false` (CANCEL = UNDO).
+    pub keep_interrupted_context: bool,
 }
 
 /// The default byte-idle stream timeout: `ATOMCODE_STREAM_TIMEOUT_SECS` if set to a valid
@@ -134,6 +137,7 @@ impl CodingAgentConfig {
             thinking_keep: None,
             compact_threshold: 0.7,
             web_search_provider: None,
+            keep_interrupted_context: false,
         }
     }
 }

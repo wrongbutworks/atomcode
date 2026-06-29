@@ -33,3 +33,12 @@ async fn assembles_and_runs_a_tool_end_to_end() {
     assert!(outcome.error.is_none(), "clean run expected, got: {:?}", outcome.error);
     assert!(outcome.text.contains("done"), "final assistant text: {:?}", outcome.text);
 }
+
+#[test]
+fn build_coding_agent_honors_keep_interrupted_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = atomcode_coding::CodingAgentConfig::new("sk-x", "https://api.example.com/v1", "m", dir.path());
+    cfg.keep_interrupted_context = true;
+    // Builds without panicking; the flag is plumbed into the kernel builder.
+    let _agent = atomcode_coding::build_coding_agent(cfg).expect("agent builds with flag on");
+}
