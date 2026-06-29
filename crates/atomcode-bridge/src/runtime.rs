@@ -2465,6 +2465,28 @@ mod undo_tests {
     }
 
     #[test]
+    fn interruption_marker_synthetic_user_not_counted_as_prompt() {
+        // Regression guard: the keep_interrupted_context marker injected by finish_cancelled
+        // uses Message::synthetic_user (synthetic=true). It must NOT be counted as a real
+        // prompt by compute_undo — otherwise /undo would restore the bracketed marker text
+        // into the input box and truncate at the wrong boundary.
+        //
+        // History: system | user("first question") | asst | marker(synthetic_user) | user("second question") | asst
+        // Expected: 2 real prompts, undo target = "second question" (not the marker).
+        let mut msgs = convo(); // system, user1, asst1, user2, asst2
+        let marker = Message::synthetic_user(
+            "[The previous response was interrupted by the user before completing. \
+             Reconsider the approach in light of this interruption before continuing.]",
+        );
+        // Insert the interruption marker between asst1 (index 2) and user2 (index 3).
+        msgs.insert(3, marker);
+        let p = compute_undo(&msgs, None).unwrap();
+        // The marker must be invisible to compute_undo: still 2 real prompts.
+        assert_eq!(p.prompts_before, 2, "interruption marker must not be counted as a real prompt");
+        assert_eq!(p.restored_prompt, "second question", "/undo must target the real prompt, not the marker");
+    }
+
+    #[test]
     fn bridge_config_maps_keep_interrupted_context() {
         // BridgeConfig.keep_interrupted_context must flow through to CodingAgentConfig.
         // Emulate the one-liner in Bridge::run: `coding_cfg.keep_interrupted_context =

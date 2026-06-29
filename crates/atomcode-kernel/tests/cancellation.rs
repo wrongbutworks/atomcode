@@ -562,8 +562,8 @@ async fn preserve_mode_injects_interruption_marker() {
 
     let calls = calls.lock().unwrap();
     let history = &calls[1].0;
-    assert!(
-        history.iter().any(|m| m.role == Role::User && m.text.contains("interrupted by the user")),
-        "expected an interruption marker user message: {history:?}"
-    );
+    let marker = history.iter().find(|m| m.text.contains("interrupted by the user"))
+        .expect("expected an interruption marker user message");
+    assert_eq!(marker.role, Role::User, "marker must be Role::User (wire-safe on all adapters)");
+    assert!(marker.synthetic, "marker must be synthetic so /undo and compaction skip it in prompt counting");
 }
