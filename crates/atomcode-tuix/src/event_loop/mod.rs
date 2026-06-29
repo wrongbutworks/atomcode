@@ -6818,15 +6818,8 @@ pub(super) fn handle_plugin_job_event(
                         .into_owned(),
                     ));
                     renderer.flush();
-                    state.on_submit();
-                    ctx.agent
-                        .cmd_tx
-                        .send(atomcode_core::agent::AgentCommand::SendMessage {
-                            text: rendered,
-                            images: vec![],
-                            image_markers: vec![],
-                        })
-                        .ok();
+                    // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                    commands::submit_user_turn(ctx, state, rendered, vec![], vec![]);
                 } else {
                     renderer.render(UiLine::Error(
                         crate::i18n::t(crate::i18n::Msg::CmdGuideSkillNotFound).into_owned(),
@@ -6866,15 +6859,8 @@ pub(super) fn handle_plugin_job_event(
                         .into_owned(),
                     ));
                     renderer.flush();
-                    state.on_submit();
-                    ctx.agent
-                        .cmd_tx
-                        .send(atomcode_core::agent::AgentCommand::SendMessage {
-                            text: rendered,
-                            images: vec![],
-                            image_markers: vec![],
-                        })
-                        .ok();
+                    // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                    commands::submit_user_turn(ctx, state, rendered, vec![], vec![]);
                 }
             }
             renderer.render(UiLine::CommandOutput(

@@ -476,15 +476,8 @@ pub(super) fn execute_slash_command(
             } else {
                 // Try expanding the "ask" skill inline first (fast path).
                 if let Some(rendered) = expand_skill(ctx, "ask", arg) {
-                    ctx.agent
-                        .cmd_tx
-                        .send(AgentCommand::SendMessage {
-                            text: rendered,
-                            images: vec![],
-                            image_markers: vec![],
-                        })
-                        .ok();
-                    state.on_submit();
+                    // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                    submit_user_turn(ctx, state, rendered, vec![], vec![]);
                 } else {
                     // "ask" skill is not installed — trigger async install
                     // and stash the topic so handle_plugin_job_event can
@@ -602,11 +595,8 @@ pub(super) fn execute_slash_command(
                      {{\"base\": \"{scope}\"}}, then give me a concise summary of its findings."
                 )
             };
-            ctx.agent
-                .cmd_tx
-                .send(AgentCommand::SendMessage { text, images: vec![], image_markers: vec![] })
-                .ok();
-            state.on_submit();
+            // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+            submit_user_turn(ctx, state, text, vec![], vec![]);
         }
         "config" => {
             // Head: current active provider + config path so users know
@@ -2053,15 +2043,8 @@ pub(super) fn execute_slash_command(
                 // prefix here. A user-typed qualified name (`foo:bar`) still
                 // works because exact match runs first.
                 if let Some(rendered) = expand_skill(ctx, skill_name, skill_args) {
-                    ctx.agent
-                        .cmd_tx
-                        .send(AgentCommand::SendMessage {
-                            text: rendered,
-                            images: vec![],
-                            image_markers: vec![],
-                        })
-                        .ok();
-                    state.on_submit();
+                    // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                    submit_user_turn(ctx, state, rendered, vec![], vec![]);
                 } else {
                     renderer.render(UiLine::Error(
                         t(Msg::SkillUnknown { name: skill_name }).into_owned(),
@@ -2087,16 +2070,9 @@ pub(super) fn execute_slash_command(
                         t(Msg::CmdSetupRunningSkill).into_owned(),
                     ));
                     renderer.flush();
-                    ctx.agent
-                        .cmd_tx
-                        .send(AgentCommand::SendMessage {
-                            text: rendered,
-                            images: vec![],
-                            image_markers: vec![],
-                        })
-                        .ok();
                     *setup_pending = true;
-                    state.on_submit();
+                    // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                    submit_user_turn(ctx, state, rendered, vec![], vec![]);
                 } else {
                     renderer.render(UiLine::Error(t(Msg::CmdSetupSkillMissing).into_owned()));
                     renderer.flush();
@@ -2141,16 +2117,9 @@ pub(super) fn execute_slash_command(
                                 t(Msg::CmdSetupRunningSkill).into_owned(),
                             ));
                             renderer.flush();
-                            ctx.agent
-                                .cmd_tx
-                                .send(AgentCommand::SendMessage {
-                                    text: rendered,
-                                    images: vec![],
-                                    image_markers: vec![],
-                                })
-                                .ok();
                             *setup_pending = true;
-                            state.on_submit();
+                            // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                            submit_user_turn(ctx, state, rendered, vec![], vec![]);
                         } else {
                             renderer
                                 .render(UiLine::Error(t(Msg::CmdSetupSkillMissing).into_owned()));
@@ -2175,25 +2144,11 @@ pub(super) fn execute_slash_command(
             // .atomcode/skills, etc.). Both expand to a prompt and dispatch
             // as a regular user message.
             if let Some(rendered) = ctx.custom_commands.render(other, arg) {
-                ctx.agent
-                    .cmd_tx
-                    .send(AgentCommand::SendMessage {
-                        text: rendered,
-                        images: vec![],
-                        image_markers: vec![],
-                    })
-                    .ok();
-                state.on_submit();
+                // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                submit_user_turn(ctx, state, rendered, vec![], vec![]);
             } else if let Some(rendered) = expand_skill(ctx, other, arg) {
-                ctx.agent
-                    .cmd_tx
-                    .send(AgentCommand::SendMessage {
-                        text: rendered,
-                        images: vec![],
-                        image_markers: vec![],
-                    })
-                    .ok();
-                state.on_submit();
+                // 同步模式投 LiveSession，否则投本地 agent（issue #845）。
+                submit_user_turn(ctx, state, rendered, vec![], vec![]);
             } else {
                 // Unknown command — emit failure telemetry
                 let available_commands: Vec<&str> = vec![
@@ -2265,6 +2220,35 @@ pub(super) fn expand_skill(ctx: &LoopCtx, name: &str, arg: &str) -> Option<Strin
         return None;
     }
     Some(skill.expand(arg, ctx.current_session.id.as_str()))
+}
+
+/// 提交一次「用户回合」到引擎，按同步模式正确路由。
+///
+/// 同步模式（`sync_session` 为 Some）投递到 LiveSession——webui 才能看到这次回合；
+/// 否则投递到本地 agent。`/skills`、`/setup`、`/guide ask`、`/review` 以及自定义命令
+/// 等「展开成 prompt 再下发」的入口此前一律直接发本地 agent，同步模式下浏览器收不到
+/// （issue #845）。统一走此 helper 即可。`image_markers` 仅本地路径用到——LiveSession
+/// 的输入不带 marker。调用方负责自己的本地回显（技能 prompt 通常不回显）。
+pub(super) fn submit_user_turn(
+    ctx: &LoopCtx,
+    state: &mut UiState,
+    text: String,
+    images: Vec<atomcode_core::conversation::message::ImagePart>,
+    image_markers: Vec<usize>,
+) {
+    if let Some(live) = &ctx.sync_session {
+        live.send_input(atomcode_core::live::UserInput { text, images });
+    } else {
+        ctx.agent
+            .cmd_tx
+            .send(AgentCommand::SendMessage {
+                text,
+                images,
+                image_markers,
+            })
+            .ok();
+    }
+    state.on_submit();
 }
 
 /// Handle `/plugin` subcommands: marketplace add/remove/update/list,
