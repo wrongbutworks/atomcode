@@ -6569,6 +6569,13 @@ pub(crate) fn save_and_reload(ctx: &mut LoopCtx, renderer: &mut dyn Renderer) {
     }
 }
 
+/// Whether a cancelled prompt should be moved back into the input box for
+/// edit-and-resend. False when `keep_interrupted_context` preserves it in history
+/// (restoring it too would duplicate the prompt on resend).
+fn should_restore_cancelled_prompt(config: &Config) -> bool {
+    !config.keep_interrupted_context
+}
+
 /// On Ctrl+C / Esc during streaming, pull the running message back
 /// into the input buffer so the user can edit and resend without
 /// re-typing. Also drops any type-ahead queue entries: a user
@@ -6580,6 +6587,12 @@ pub(crate) fn save_and_reload(ctx: &mut LoopCtx, renderer: &mut dyn Renderer) {
 /// up within a frame.
 fn restore_cancelled_message_to_buf(app: &mut App, renderer: &mut dyn Renderer, ctx: &LoopCtx) {
     app.message_queue.clear();
+    if !should_restore_cancelled_prompt(&ctx.config) {
+        // Preserve mode: the prompt stays in history; drop it from the resend slot
+        // so it isn't also re-inserted into the input box (which would duplicate it).
+        app.state.last_submitted_message = None;
+        return;
+    }
     if let Some(msg) = app.state.last_submitted_message.take() {
         // Cursor at the end (edit-and-resend), but suppress the slash menu
         // for one frame so a restored `/command` doesn't re-pop the list.
@@ -6598,6 +6611,21 @@ fn restore_cancelled_message_to_buf(app: &mut App, renderer: &mut dyn Renderer, 
             app.message_queue.len(),
             app.menu.selected,
         );
+    }
+}
+
+#[cfg(test)]
+mod restore_cancelled_prompt_gate_tests {
+    use super::should_restore_cancelled_prompt;
+    use atomcode_core::config::Config;
+
+    #[test]
+    fn cancelled_prompt_not_restored_when_keeping_context() {
+        let mut cfg = Config::default();
+        cfg.keep_interrupted_context = false;
+        assert!(should_restore_cancelled_prompt(&cfg), "default: restore for edit-and-resend");
+        cfg.keep_interrupted_context = true;
+        assert!(!should_restore_cancelled_prompt(&cfg), "preserve mode: do not restore (avoid duplicate)");
     }
 }
 
