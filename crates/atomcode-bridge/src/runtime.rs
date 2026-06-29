@@ -179,6 +179,10 @@ struct Bridge {
     /// the legacy TurnComplete/TurnCancelled can carry the `messages` payload the
     /// drivers persist sessions from.
     pending_finish: Option<StopReason>,
+    /// INSTRUMENTATION (best-effort, never affects behavior): epoch of the most
+    /// recent COMMITTED compaction, set so the NEXT `finish_turn` records that turn's
+    /// outcome (a proxy for "did compaction lose context"). Cleared on consume.
+    compaction_pending_outcome: Option<u64>,
     /// Driver asked for SyncMessages: the next Snapshot answers it.
     pending_sync: bool,
     /// A plan-mode toggle note to prepend to the next user message (v1 parity:
@@ -338,6 +342,7 @@ impl Bridge {
             last_usage: None,
             turn_running: false,
             pending_finish: None,
+            compaction_pending_outcome: None,
             pending_sync: false,
             pending_plan_note: None,
             pending_undo: None,
@@ -1217,6 +1222,16 @@ impl Bridge {
         // may still be marked running.
         self.turn_running = false;
         self.pending_finish = None;
+        // INSTRUMENTATION: if this turn immediately followed a committed compaction,
+        // record its outcome (post-compaction failure proxy). `format!` borrows
+        // `reason` before the match below consumes it. Best-effort; never affects flow.
+        if let Some(epoch) = self.compaction_pending_outcome.take() {
+            log_compaction_metric(
+                &self.bridge_session,
+                "post_compaction_turn",
+                serde_json::json!({ "epoch": epoch, "stop_reason": format!("{reason:?}") }),
+            );
+        }
         let duration = self.stats.started.map(|s| s.elapsed()).unwrap_or(Duration::ZERO);
         match reason {
             StopReason::Cancelled => {
@@ -1536,8 +1551,30 @@ impl Bridge {
             KEv::CompactionStarted { .. } => {
                 self.emit(CoreEv::CompactionUi(atomcode_core::agent::CompactionUiKind::Begin));
             }
-            KEv::Compacted { committed, trigger, removed, bytes_before, bytes_after, .. } => {
+            KEv::Compacted { committed, trigger, removed, bytes_before, bytes_after, epoch } => {
                 use atomcode_core::agent::CompactionUiKind;
+                // INSTRUMENTATION (best-effort, never affects behavior): record this
+                // compaction so we can measure generational depth (`epoch` = how many
+                // committed compactions this session has stacked — a compaction at
+                // epoch>=2 is re-summarizing a prior summary) and shrink ratios across
+                // real sessions. See `log_compaction_metric`.
+                log_compaction_metric(
+                    &self.bridge_session,
+                    "compaction",
+                    serde_json::json!({
+                        "committed": committed,
+                        "trigger": format!("{trigger:?}"),
+                        "epoch": epoch,
+                        "removed": removed,
+                        "bytes_before": bytes_before,
+                        "bytes_after": bytes_after,
+                    }),
+                );
+                // Arm the post-compaction outcome probe: the NEXT turn's stop reason is
+                // a proxy for "did this compaction lose context". Consumed in `finish_turn`.
+                if committed {
+                    self.compaction_pending_outcome = Some(epoch);
+                }
                 // The kernel measures BYTES; token figures derive from the last
                 // provider usage. Capture it BEFORE mutating `last_usage` below.
                 let before_tokens =
@@ -2082,6 +2119,51 @@ fn manual_noop_result(bytes_before: usize, bytes_after: usize, before_tokens: us
     }
 }
 
+/// Build a one-line JSON compaction-metrics record: always carries `ts`/`session`/`kind`,
+/// plus every field from `extra`. Pure + deterministic (the `ts` is injected by the
+/// caller) so it can be unit-tested without touching the filesystem or the clock.
+fn compaction_metric_record(
+    ts_ms: u128,
+    session: &str,
+    kind: &str,
+    extra: serde_json::Value,
+) -> String {
+    let mut obj = serde_json::Map::new();
+    obj.insert("ts".into(), serde_json::json!(ts_ms));
+    obj.insert("session".into(), serde_json::json!(session));
+    obj.insert("kind".into(), serde_json::json!(kind));
+    if let serde_json::Value::Object(m) = extra {
+        for (k, v) in m {
+            obj.insert(k, v);
+        }
+    }
+    serde_json::Value::Object(obj).to_string()
+}
+
+/// Append a compaction-metrics JSONL line to `<config_dir>/logs/compaction-metrics.jsonl`.
+/// BEST-EFFORT instrumentation only: every error is swallowed — metrics must NEVER
+/// affect a turn. Used to measure compaction generational depth + post-compaction
+/// outcomes across real sessions (ROI input for the anchored-compaction redesign).
+fn log_compaction_metric(session: &str, kind: &str, extra: serde_json::Value) {
+    use std::io::Write;
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let line = compaction_metric_record(ts_ms, session, kind, extra);
+    let dir = atomcode_core::config::Config::config_dir().join("logs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("compaction-metrics.jsonl"))
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// Estimate the post-compaction token count by scaling the pre-compaction count by
 /// the kernel's byte-reduction ratio. The kernel measures conversation BYTES, not
 /// tokens; `before_tokens` (the real provider count) also covers the fixed
@@ -2153,14 +2235,33 @@ mod goal_summary_tests {
 #[cfg(test)]
 mod undo_tests {
     use super::{
-        apply_reload_provider, build_provider, compaction_mark_label, compute_undo,
-        default_max_tokens, estimate_after_tokens, fmt_k_tokens, friendly_provider_error,
-        manual_noop_result,
+        apply_reload_provider, build_provider, compaction_mark_label, compaction_metric_record,
+        compute_undo, default_max_tokens, estimate_after_tokens, fmt_k_tokens,
+        friendly_provider_error, manual_noop_result,
     };
     use atomcode_core::config::provider::ProviderConfig;
     use atomcode_coding::CodingAgentConfig;
     use atomcode_kernel::message::Message;
     use atomcode_kernel::provider::ReasoningEffort;
+
+    #[test]
+    fn compaction_metric_record_carries_core_and_extra_fields() {
+        let line = compaction_metric_record(
+            1234,
+            "sess-1",
+            "compaction",
+            serde_json::json!({ "epoch": 3u64, "committed": true, "trigger": "Manual" }),
+        );
+        // One valid JSON object per line, with the always-present keys + the extras.
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["ts"], 1234);
+        assert_eq!(v["session"], "sess-1");
+        assert_eq!(v["kind"], "compaction");
+        assert_eq!(v["epoch"], 3);
+        assert_eq!(v["committed"], true);
+        assert_eq!(v["trigger"], "Manual");
+        assert!(!line.contains('\n'), "record must be a single JSONL line");
+    }
 
     #[test]
     fn atomgit_gateway_401_swaps_for_login_hint() {
