@@ -842,7 +842,14 @@ impl RunningAgent {
             // API-valid. APPEND-ONLY — prefix-cache safe. Mirrors v1's
             // `Conversation::cancel_current_turn`.
             convo.backfill_cancelled_tool_results();
-            convo.push(Message::system(
+            // Inject an interruption marker as a USER-role message — wire-safe on all
+            // adapters. A system message placed mid-conversation is rejected or silently
+            // dropped by many openai-compat gateways (non-leading system), and the
+            // Anthropic adapter lifts ALL system messages to the top-level `system`
+            // field, detaching this marker from its position. A user-role message merges
+            // cleanly into the next user prompt on Anthropic and is valid consecutive-user
+            // on openai-compat.
+            convo.push(Message::user(
                 "[The previous response was interrupted by the user before completing. \
                  Reconsider the approach in light of this interruption before continuing.]",
             ));

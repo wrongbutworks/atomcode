@@ -531,8 +531,10 @@ async fn cancel_preserves_turn_when_keep_interrupted_context() {
     );
 }
 
-// CLAIM 17f: in preserve mode, finish_cancelled appends a synthetic system marker so
+// CLAIM 17f: in preserve mode, finish_cancelled appends a synthetic USER-role marker so
 // the next turn's request explicitly tells the model the prior turn was user-interrupted.
+// User role is wire-safe on all adapters (non-leading system messages are rejected/dropped
+// on many openai-compat gateways; Anthropic lifts all system to top-level field).
 #[tokio::test]
 async fn preserve_mode_injects_interruption_marker() {
     let mut reg = ToolRegistry::new();
@@ -561,7 +563,7 @@ async fn preserve_mode_injects_interruption_marker() {
     let calls = calls.lock().unwrap();
     let history = &calls[1].0;
     assert!(
-        history.iter().any(|m| m.role == Role::System && m.text.contains("interrupted by the user")),
-        "expected an interruption marker system message: {history:?}"
+        history.iter().any(|m| m.role == Role::User && m.text.contains("interrupted by the user")),
+        "expected an interruption marker user message: {history:?}"
     );
 }
