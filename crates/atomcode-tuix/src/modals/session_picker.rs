@@ -303,6 +303,12 @@ impl Modal for SessionPicker {
                         ctx.bg_manager
                             .set_foreground_session(ctx.current_session.clone());
                         state.on_turn_complete();
+                        // 同步模式：把这次 TUI 端的会话切换广播给 webui 并重绑本端
+                        // LiveSession，让浏览器跟随切到同一会话（issue #845）。同时修复
+                        // 一个潜在 bug——此前 /resume 只改 current_session 不重绑 sync_session，
+                        // 导致同步模式下 resume 后 TUI 输入仍投递到旧会话的 LiveSession。
+                        // 非同步模式为 no-op。
+                        crate::event_loop::commands::sync_broadcast_session_switch(ctx, renderer);
                         Ok(ModalAction::Close)
                     }
                     Err(e) => {

@@ -8155,7 +8155,9 @@ fn handle_agent_event(
             // resetting on a redundant broadcast.
             if ctx.working_dir != new_dir {
                 commands::apply_cd(ctx, new_dir);
-                commands::reset_to_new_session(ctx, state, renderer);
+                // broadcast_to_sync=false：本分支本身就是「跟随 webui /cd」的 incoming
+                // 同步，重置后再广播会话切换会回环到对端。
+                commands::reset_to_new_session(ctx, state, renderer, false);
             }
         }
         AgentEvent::ContextStats {
@@ -8602,6 +8604,28 @@ fn handle_agent_event(
             // 到「按指定 id 建空白会话」的旧行为。
             crate::tuix_trace!("TUI", "SessionSwitched: session_id={}, sync_session={}", session_id, ctx.sync_session.is_some());
             let sid = atomcode_core::session::SessionId::from_string(session_id);
+
+            // 自echo 守卫：本端（TUI `/resume` 等）发起的会话切换会经
+            // sync_broadcast_session_switch 的 live_switch_session 广播回流到本端
+            // 转发器，再次进入此分支。若目标会话就是当前会话、且本端 sync_session
+            // 已是当前全局活动 LiveSession（说明切换已在发起处 ensure+attach 完成），
+            // 则无需二次清场/回放——直接忽略，避免闪烁与重复 ensure_live_session。
+            // 对照上面 ProviderChanged 分支「已是本端 provider 则跳过」的同款处理。
+            // 用 Arc 指针相等而非仅比 id：webui 关闭再开启同步会广播「相同 id」期望
+            // TUI 重绑（issue #850），此时 sync_session 是已失效的旧实例、与全局不等，
+            // 守卫不触发，仍正常走下面的重新附着。
+            if ctx.current_session.id == sid {
+                if let (Some(local), Some(global)) = (
+                    ctx.sync_session.as_ref(),
+                    atomcode_daemon::current_live_session(),
+                ) {
+                    if std::sync::Arc::ptr_eq(local, &global) {
+                        crate::tuix_trace!("TUI", "SessionSwitched: self-echo ignored sid={}", sid);
+                        return;
+                    }
+                }
+            }
+
             let loaded = atomcode_core::session::SessionManager::load_any(&sid).ok();
 
             // 重置对话与计数（无论加载成功与否都先清场）。

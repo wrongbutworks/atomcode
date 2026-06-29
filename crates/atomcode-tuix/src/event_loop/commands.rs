@@ -311,6 +311,38 @@ pub(crate) fn attach_live_session(
     ));
 }
 
+/// 同步模式下：TUI 自身切换了当前会话（如 `/resume` 选中另一会话）后调用，
+/// 把切换广播给 webui，并把本端 LiveSession 重新附着到新会话——浏览器据此
+/// 跟随切到同一会话（issue #845：之前只实现 webui 切→TUI 跟，反向缺失）。
+///
+/// 非同步模式（`sync_session` 为 None）静默跳过：独立 TUI 的会话切换与浏览器无关。
+///
+/// 顺序关键，必须「先广播、后替换」：
+///   1. 先在「旧」全局 LiveSession 上 `live_switch_session` 广播 SessionSwitched——
+///      此刻 webui 的 /live SSE 仍订阅旧实例，据此跟随切换并以新 session_id 重连；
+///   2. 再 `ensure_live_session` 用新会话（id+历史）替换全局实例、`attach_live_session`
+///      重绑本端转发器。
+/// 若顺序反了（先替换再广播），webui 订阅的旧实例收不到广播，浏览器就不跟随。
+///
+/// 广播会回流到本端「旧」转发器→`AgentEvent::SessionSwitched`，但 mod.rs 的 handler
+/// 以「current_session.id 已等于该 id 且 sync_session 即当前全局实例」短路，不会二次
+/// 清场/回放（对照 `ProviderChanged` 分支的自echo 处理）。
+pub(crate) fn sync_broadcast_session_switch(ctx: &mut LoopCtx, renderer: &mut dyn Renderer) {
+    if ctx.sync_session.is_none() {
+        return;
+    }
+    // 1) 在旧全局实例上广播 → webui 跟随切换。
+    atomcode_daemon::live_switch_session(ctx.current_session.id.clone());
+    // 2) 用新会话替换全局 LiveSession（带 id+历史，使三端落同一文件），并重绑本端。
+    let session = atomcode_daemon::ensure_live_session(
+        ctx.working_dir.clone(),
+        ctx.telemetry.clone(),
+        Some(ctx.current_session.id.clone()),
+        ctx.current_session.messages.clone(),
+    );
+    attach_live_session(ctx, renderer, session, false);
+}
+
 pub(super) fn execute_slash_command(
     cmd: &str,
     arg: &str,
@@ -658,13 +690,13 @@ pub(super) fn execute_slash_command(
             // everything after a clear. Delegate to the same reset `/session`
             // uses — it sends ClearConversation to the engine AND wipes the
             // screen + re-renders the welcome banner.
-            reset_to_new_session(ctx, state, renderer);
+            reset_to_new_session(ctx, state, renderer, true);
         }
         "session" => {
             // Start fresh in the current directory. Ports `/session` from the
             // legacy TUI. Shared with the webui-driven project switch via
             // `reset_to_new_session`.
-            reset_to_new_session(ctx, state, renderer);
+            reset_to_new_session(ctx, state, renderer, true);
         }
         "model" => {
             if ctx.config.providers.is_empty() {
@@ -3208,10 +3240,16 @@ pub(crate) fn launch_fixissue(
 /// (`AgentEvent::ProjectSwitched`). For the project-switch case, call
 /// `apply_cd` FIRST so `ctx.working_dir` is the new dir before the new
 /// `Session` is bound to it.
+/// 开一个全新空会话（`/clear`、`/session`，以及 webui /cd 跟随时的项目重置）。
+///
+/// `broadcast_to_sync`：仅当本次重置由「TUI 用户主动新建」触发时为 true——同步模式下
+/// 把新建会话广播给 webui，让浏览器跟随新建到同一空会话（issue #845）。webui /cd 跟随
+/// （`ProjectSwitched` handler）传 false：那是 incoming 同步，再广播回去会形成回环。
 pub(crate) fn reset_to_new_session(
     ctx: &mut LoopCtx,
     state: &mut UiState,
     renderer: &mut dyn Renderer,
+    broadcast_to_sync: bool,
 ) {
     ctx.agent.cmd_tx.send(AgentCommand::ClearConversation).ok();
     ctx.current_session_id = None;
@@ -3248,6 +3286,15 @@ pub(crate) fn reset_to_new_session(
     renderer.render(UiLine::CommandOutput(t(Msg::CmdNewSession).into_owned()));
     renderer.flush();
     renderer.end_sync();
+
+    // 同步模式 + 用户主动新建：把新建会话广播给 webui 并重绑本端 LiveSession。
+    // 先落盘——webui 跟随时会 getSession(new_id)，文件不存在会 404；这与 webui 新建
+    // 会话端点「先 save 再广播」一致（lib.rs create_session）。仅在 sync 模式落盘，
+    // 不污染独立 TUI 的磁盘（保持「不存空会话」的既有行为、与 issue #850 一致）。
+    if broadcast_to_sync && ctx.sync_session.is_some() {
+        let _ = ctx.session_manager.save(&ctx.current_session);
+        sync_broadcast_session_switch(ctx, renderer);
+    }
 }
 
 pub(crate) fn apply_cd(ctx: &mut LoopCtx, path: PathBuf) {
